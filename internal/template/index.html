@@ -1,0 +1,281 @@
+<!doctype html>
+<html>
+  <head>
+    <title>SSE Streaming Chat with Clean Architecture</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+        background: #f5f5f5;
+      }
+      .container {
+        max-width: 800px;
+        margin: 0 auto;
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+        text-align: center;
+      }
+      .controls {
+        margin-bottom: 20px;
+        padding: 15px;
+        background: #f9f9f9;
+        border-radius: 5px;
+      }
+      #messages {
+        border: 1px solid #ddd;
+        height: 400px;
+        overflow-y: scroll;
+        padding: 15px;
+        margin: 15px 0;
+        background: white;
+        border-radius: 5px;
+      }
+      .message {
+        margin: 8px 0;
+        padding: 8px 12px;
+        border-radius: 5px;
+      }
+      .error {
+        background: #ffebee;
+        color: #c62828;
+        border-left: 4px solid #c62828;
+      }
+      .connection {
+        background: #e8f5e8;
+        color: #2e7d32;
+        border-left: 4px solid #2e7d32;
+      }
+      .data {
+        background: #e3f2fd;
+        color: #1565c0;
+        border-left: 4px solid #1565c0;
+      }
+      .done {
+        background: #fff3e0;
+        color: #ef6c00;
+        border-left: 4px solid #ef6c00;
+      }
+      .system {
+        background: #f3e5f5;
+        color: #7b1fa2;
+        border-left: 4px solid #7b1fa2;
+      }
+      input,
+      select,
+      button {
+        padding: 10px;
+        margin: 5px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      input[type="text"] {
+        width: 300px;
+      }
+      button {
+        background: #007bff;
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #0056b3;
+      }
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+      .status {
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 4px;
+        font-weight: bold;
+      }
+      .connected {
+        background: #d4edda;
+        color: #155724;
+      }
+      .disconnected {
+        background: #f8d7da;
+        color: #721c24;
+      }
+      .footer {
+        margin-top: 20px;
+        text-align: center;
+        color: #666;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🤖 SSE Streaming Chat Demo</h1>
+      <p style="text-align: center; color: #666">Clean Architecture • OpenAI • Groq • Real-time Streaming</p>
+
+      <div class="controls">
+        <div>
+          <input type="text" id="promptInput" placeholder="Enter your message..." />
+          <select id="providerSelect">
+            <option value="">Auto (Default)</option>
+            <option value="openai">OpenAI</option>
+            <option value="groq">Groq</option>
+          </select>
+          <button onclick="sendMessage()" id="sendBtn">Send</button>
+        </div>
+        <div style="margin-top: 10px">
+          <button onclick="connect()" id="connectBtn">Connect</button>
+          <button onclick="disconnect()" id="disconnectBtn">Disconnect</button>
+          <button onclick="clearMessages()">Clear</button>
+        </div>
+      </div>
+
+      <div id="status" class="status disconnected">Disconnected</div>
+      <div id="messages"></div>
+
+      <div class="footer">
+        <p>Session Coverage: Clean Architecture • Domain-Driven Design • Dependency Injection</p>
+        <p>Features: Multiple LLM Providers • Rate Limiting • Health Monitoring • Metrics</p>
+      </div>
+    </div>
+
+    <script>
+      let eventSource = null;
+      let isConnected = false;
+
+      function connect() {
+        if (eventSource) {
+          eventSource.close();
+        }
+
+        eventSource = new EventSource("/stream");
+
+        eventSource.onmessage = function (event) {
+          try {
+            const data = JSON.parse(event.data);
+            displayMessage(data);
+          } catch (e) {
+            console.error("Failed to parse message:", e);
+          }
+        };
+
+        eventSource.onopen = function () {
+          isConnected = true;
+          updateStatus("Connected", "connected");
+          updateButtons();
+        };
+
+        eventSource.onerror = function (event) {
+          isConnected = false;
+          updateStatus("Connection Error - Retrying...", "disconnected");
+          updateButtons();
+        };
+      }
+
+      function disconnect() {
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        isConnected = false;
+        updateStatus("Disconnected", "disconnected");
+        updateButtons();
+      }
+
+      function sendMessage() {
+        const input = document.getElementById("promptInput");
+        const providerSelect = document.getElementById("providerSelect");
+        const prompt = input.value.trim();
+
+        if (!prompt) return;
+        if (!isConnected) {
+          alert("Please connect first");
+          return;
+        }
+
+        const payload = {
+          prompt: prompt,
+          provider: providerSelect.value || undefined,
+        };
+
+        fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            console.log("Chat request sent:", data);
+          })
+          .catch((error) => {
+            console.error("Failed to send chat request:", error);
+            alert("Failed to send message: " + error.message);
+          });
+
+        input.value = "";
+      }
+
+      function displayMessage(data) {
+        const messagesDiv = document.getElementById("messages");
+        const messageDiv = document.createElement("div");
+        messageDiv.className = "message " + data.type;
+
+        const timestamp = new Date(data.timestamp).toLocaleTimeString();
+        const provider = data.provider ? " [" + data.provider + "]" : "";
+        messageDiv.innerHTML = "<strong>" + timestamp + provider + "</strong> " + data.content;
+
+        messagesDiv.appendChild(messageDiv);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+
+      function clearMessages() {
+        document.getElementById("messages").innerHTML = "";
+      }
+
+      function updateStatus(message, className) {
+        const statusDiv = document.getElementById("status");
+        statusDiv.textContent = message;
+        statusDiv.className = "status " + className;
+      }
+
+      function updateButtons() {
+        document.getElementById("connectBtn").disabled = isConnected;
+        document.getElementById("disconnectBtn").disabled = !isConnected;
+        document.getElementById("sendBtn").disabled = !isConnected;
+      }
+
+      // Auto-connect on page load
+      connect();
+      updateButtons();
+
+      // Handle Enter key in input
+      document.getElementById("promptInput").addEventListener("keypress", function (e) {
+        if (e.key === "Enter") {
+          sendMessage();
+        }
+      });
+
+      // Load available providers
+      fetch("/api/providers")
+        .then((response) => response.json())
+        .then((providers) => {
+          const select = document.getElementById("providerSelect");
+          // Clear existing options except the first one
+          while (select.children.length > 1) {
+            select.removeChild(select.lastChild);
+          }
+          // Add provider options
+          providers.forEach((provider) => {
+            const option = document.createElement("option");
+            option.value = provider;
+            option.textContent = provider.charAt(0).toUpperCase() + provider.slice(1);
+            select.appendChild(option);
+          });
+        })
+        .catch((error) => console.error("Failed to load providers:", error));
+    </script>
+  </body>
+</html>
