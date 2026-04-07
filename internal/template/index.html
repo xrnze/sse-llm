@@ -1,6 +1,7 @@
 <!doctype html>
 <html>
   <head>
+    <meta charset="utf-8">
     <title>SSE Streaming Chat with Clean Architecture</title>
     <style>
       body {
@@ -34,37 +35,91 @@
         margin: 15px 0;
         background: white;
         border-radius: 5px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
       }
+
+      /* --- Chat bubble base --- */
       .message {
-        margin: 8px 0;
-        padding: 8px 12px;
-        border-radius: 5px;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 14px;
+        border-radius: 12px;
+        word-wrap: break-word;
+        line-height: 1.5;
       }
-      .error {
+
+      /* Markdown content inside LLM bubble */
+      .message-llm p { margin: 0.4em 0; }
+      .message-llm pre {
+        background: #1e1e1e;
+        color: #d4d4d4;
+        padding: 10px;
+        border-radius: 6px;
+        overflow-x: auto;
+        font-size: 13px;
+      }
+      .message-llm code {
+        background: #e8e8e8;
+        padding: 2px 5px;
+        border-radius: 3px;
+        font-size: 13px;
+      }
+      .message-llm pre code {
+        background: none;
+        padding: 0;
+      }
+
+      /* User bubble — right-aligned, accent on right */
+      .message-user {
+        width: fit-content;
+        max-width: 75%;
+        align-self: flex-end;
+        text-align: right;
+        background: #007bff;
+        color: white;
+        border-right: 4px solid #0056b3;
+        border-radius: 12px 4px 12px 12px;
+        position: relative; /* For retry button positioning */
+      }
+      .retry-btn {
+        background: rgba(255, 255, 255, 0.2);
+        border: none;
+        color: white;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        font-size: 12px;
+        cursor: pointer;
+        margin-left: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        vertical-align: middle;
+      }
+      .retry-btn:hover {
+        background: rgba(255, 255, 255, 0.4);
+      }
+
+      /* LLM bubble — left-aligned */
+      .message-llm {
+        align-self: flex-start;
+        text-align: left;
+        background: #f0f0f0;
+        color: #222;
+        border-left: 4px solid #007bff;
+        border-radius: 4px 12px 12px 12px;
+      }
+
+      /* Error bubble */
+      .message-error {
+        align-self: flex-start;
         background: #ffebee;
         color: #c62828;
         border-left: 4px solid #c62828;
       }
-      .connection {
-        background: #e8f5e8;
-        color: #2e7d32;
-        border-left: 4px solid #2e7d32;
-      }
-      .data {
-        background: #e3f2fd;
-        color: #1565c0;
-        border-left: 4px solid #1565c0;
-      }
-      .done {
-        background: #fff3e0;
-        color: #ef6c00;
-        border-left: 4px solid #ef6c00;
-      }
-      .system {
-        background: #f3e5f5;
-        color: #7b1fa2;
-        border-left: 4px solid #7b1fa2;
-      }
+
       input,
       select,
       button {
@@ -95,13 +150,13 @@
         border-radius: 4px;
         font-weight: bold;
       }
-      .connected {
+      .idle {
         background: #d4edda;
         color: #155724;
       }
-      .disconnected {
-        background: #f8d7da;
-        color: #721c24;
+      .streaming {
+        background: #fff3cd;
+        color: #856404;
       }
       .footer {
         margin-top: 20px;
@@ -109,7 +164,13 @@
         color: #666;
         font-size: 14px;
       }
+      .provider-tag {
+        font-size: 11px;
+        opacity: 0.7;
+        margin-top: 4px;
+      }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   </head>
   <body>
     <div class="container">
@@ -121,19 +182,14 @@
           <input type="text" id="promptInput" placeholder="Enter your message..." />
           <select id="providerSelect">
             <option value="">Auto (Default)</option>
-            <option value="openai">OpenAI</option>
-            <option value="groq">Groq</option>
           </select>
-          <button onclick="sendMessage()" id="sendBtn">Send</button>
-        </div>
-        <div style="margin-top: 10px">
-          <button onclick="connect()" id="connectBtn">Connect</button>
-          <button onclick="disconnect()" id="disconnectBtn">Disconnect</button>
+          <button onclick="handleSendClick()" id="sendBtn">Send</button>
+          <button onclick="abortStream()" id="stopBtn" style="display: none; background: #dc3545;">⏹ Stop</button>
           <button onclick="clearMessages()">Clear</button>
         </div>
       </div>
 
-      <div id="status" class="status disconnected">Disconnected</div>
+      <div id="status" class="status idle">Ready</div>
       <div id="messages"></div>
 
       <div class="footer">
@@ -143,131 +199,213 @@
     </div>
 
     <script>
-      let eventSource = null;
-      let isConnected = false;
+      const sendBtn = document.getElementById("sendBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const messagesDiv = document.getElementById("messages");
 
-      function connect() {
-        if (eventSource) {
-          eventSource.close();
+      let currentAbortController = null;
+      let lastPromptText = "";
+      let lastUserBubble = null;
+      let lastLLMBubble = null;
+
+      function setStreaming(active) {
+        sendBtn.disabled = active;
+        sendBtn.textContent = active ? "⏳ Sending..." : "Send";
+        sendBtn.style.display = active ? "none" : "inline-block";
+        stopBtn.style.display = active ? "inline-block" : "none";
+
+        const statusDiv = document.getElementById("status");
+        statusDiv.textContent = active ? "Streaming..." : "Ready";
+        statusDiv.className = "status " + (active ? "streaming" : "idle");
+
+        // Disable retry button during active stream if it exists
+        if (lastUserBubble) {
+          const retryBtn = lastUserBubble.querySelector(".retry-btn");
+          if (retryBtn) retryBtn.style.display = active ? "none" : "inline-flex";
         }
-
-        eventSource = new EventSource("/stream");
-
-        eventSource.onmessage = function (event) {
-          try {
-            const data = JSON.parse(event.data);
-            displayMessage(data);
-          } catch (e) {
-            console.error("Failed to parse message:", e);
-          }
-        };
-
-        eventSource.onopen = function () {
-          isConnected = true;
-          updateStatus("Connected", "connected");
-          updateButtons();
-        };
-
-        eventSource.onerror = function (event) {
-          isConnected = false;
-          updateStatus("Connection Error - Retrying...", "disconnected");
-          updateButtons();
-        };
       }
 
-      function disconnect() {
-        if (eventSource) {
-          eventSource.close();
-          eventSource = null;
-        }
-        isConnected = false;
-        updateStatus("Disconnected", "disconnected");
-        updateButtons();
-      }
-
-      function sendMessage() {
-        const input = document.getElementById("promptInput");
-        const providerSelect = document.getElementById("providerSelect");
-        const prompt = input.value.trim();
-
-        if (!prompt) return;
-        if (!isConnected) {
-          alert("Please connect first");
-          return;
-        }
-
-        const payload = {
-          prompt: prompt,
-          provider: providerSelect.value || undefined,
-        };
-
-        fetch("/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            console.log("Chat request sent:", data);
-          })
-          .catch((error) => {
-            console.error("Failed to send chat request:", error);
-            alert("Failed to send message: " + error.message);
-          });
-
-        input.value = "";
-      }
-
-      function displayMessage(data) {
-        const messagesDiv = document.getElementById("messages");
-        const messageDiv = document.createElement("div");
-        messageDiv.className = "message " + data.type;
-
-        const timestamp = new Date(data.timestamp).toLocaleTimeString();
-        const provider = data.provider ? " [" + data.provider + "]" : "";
-        messageDiv.innerHTML = "<strong>" + timestamp + provider + "</strong> " + data.content;
-
-        messagesDiv.appendChild(messageDiv);
+      function scrollToBottom() {
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
       }
 
+      function abortStream() {
+        if (currentAbortController) {
+          currentAbortController.abort();
+        }
+      }
+
+      function appendUserMessage(text) {
+        // Remove retry button from previous message if it exists
+        if (lastUserBubble) {
+          const oldRetry = lastUserBubble.querySelector(".retry-btn");
+          if (oldRetry) oldRetry.remove();
+        }
+
+        const bubble = document.createElement("div");
+        bubble.className = "message message-user";
+        
+        const textSpan = document.createElement("span");
+        textSpan.textContent = text;
+        bubble.appendChild(textSpan);
+        
+        // Add retry button (hidden while streaming initially)
+        const retryBtn = document.createElement("button");
+        retryBtn.innerHTML = "↻";
+        retryBtn.className = "retry-btn";
+        retryBtn.title = "Retry this prompt";
+        retryBtn.style.display = "none";
+        retryBtn.onclick = () => handleRetryClick();
+        bubble.appendChild(retryBtn);
+
+        messagesDiv.appendChild(bubble);
+        scrollToBottom();
+        
+        lastPromptText = text;
+        lastUserBubble = bubble;
+        return bubble;
+      }
+
+      function createLLMBubble() {
+        const bubble = document.createElement("div");
+        bubble.className = "message message-llm";
+        messagesDiv.appendChild(bubble);
+        scrollToBottom();
+        lastLLMBubble = bubble;
+        return bubble;
+      }
+
+      function displayError(message) {
+        const bubble = document.createElement("div");
+        bubble.className = "message message-error";
+        bubble.innerHTML = "<strong>Error:</strong> " + message;
+        messagesDiv.appendChild(bubble);
+        scrollToBottom();
+      }
+
+      function handleSendClick() {
+        const input = document.getElementById("promptInput");
+        const prompt = input.value.trim();
+        if (!prompt) return;
+
+        input.value = "";
+        appendUserMessage(prompt);
+        
+        const providerSelect = document.getElementById("providerSelect");
+        const provider = providerSelect.value || undefined;
+        
+        streamPrompt(prompt, provider, createLLMBubble());
+      }
+
+      function handleRetryClick() {
+        if (!lastPromptText || !lastLLMBubble) return;
+        
+        // Clear the previous LLM response content
+        lastLLMBubble.innerHTML = "";
+        lastLLMBubble.className = "message message-llm"; // Reset class in case it was an error
+        
+        const providerSelect = document.getElementById("providerSelect");
+        const provider = providerSelect.value || undefined;
+        
+        streamPrompt(lastPromptText, provider, lastLLMBubble);
+      }
+
+      async function streamPrompt(promptText, providerName, targetBubble) {
+        setStreaming(true);
+        currentAbortController = new AbortController();
+
+        const payload = {
+          prompt: promptText,
+          provider: providerName,
+        };
+
+        let rawMarkdown = "";
+
+        try {
+          const response = await fetch("/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: currentAbortController.signal
+          });
+
+          if (!response.ok) {
+            const errText = await response.text();
+            displayError("Request failed (" + response.status + "): " + errText);
+            setStreaming(false);
+            return;
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let currentEventType = "message";
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split("\n");
+            buffer = lines.pop();
+
+            for (const line of lines) {
+              if (line.startsWith("event:")) {
+                currentEventType = line.slice(6).trim();
+              } else if (line.startsWith("data:")) {
+                const raw = line.slice(5).trim();
+                try {
+                  const data = JSON.parse(raw);
+
+                  if (currentEventType === "error") {
+                    displayError(data.content || "Unknown error");
+                  } else if (data.type === "done") {
+                    // Loop ends, finally block handles setStreaming(false)
+                  } else if (data.type === "system") {
+                    // skip system messages
+                  } else {
+                    rawMarkdown += data.content;
+                    targetBubble.innerHTML = marked.parse(rawMarkdown);
+                    scrollToBottom();
+                  }
+                } catch (e) {
+                  console.error("Failed to parse SSE data:", e, raw);
+                }
+                currentEventType = "message";
+              }
+            }
+          }
+        } catch (err) {
+          if (err.name === 'AbortError') {
+            rawMarkdown += "\n\n*(Stream stopped by user)*";
+            targetBubble.innerHTML = marked.parse(rawMarkdown);
+            scrollToBottom();
+          } else {
+            displayError("Stream error: " + err.message);
+          }
+        } finally {
+          setStreaming(false);
+          currentAbortController = null;
+        }
+      }
+
       function clearMessages() {
-        document.getElementById("messages").innerHTML = "";
+        messagesDiv.innerHTML = "";
       }
 
-      function updateStatus(message, className) {
-        const statusDiv = document.getElementById("status");
-        statusDiv.textContent = message;
-        statusDiv.className = "status " + className;
-      }
-
-      function updateButtons() {
-        document.getElementById("connectBtn").disabled = isConnected;
-        document.getElementById("disconnectBtn").disabled = !isConnected;
-        document.getElementById("sendBtn").disabled = !isConnected;
-      }
-
-      // Auto-connect on page load
-      connect();
-      updateButtons();
-
-      // Handle Enter key in input
+      // Enter key submits
       document.getElementById("promptInput").addEventListener("keypress", function (e) {
         if (e.key === "Enter") {
-          sendMessage();
+          handleSendClick();
         }
       });
 
-      // Load available providers
+      // Populate provider dropdown
       fetch("/api/providers")
         .then((response) => response.json())
         .then((providers) => {
           const select = document.getElementById("providerSelect");
-          // Clear existing options except the first one
-          while (select.children.length > 1) {
-            select.removeChild(select.lastChild);
-          }
-          // Add provider options
           providers.forEach((provider) => {
             const option = document.createElement("option");
             option.value = provider;

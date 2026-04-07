@@ -126,10 +126,9 @@ func (s *sseStreamer) WriteMessage(message *domain.Message) error {
 	return nil
 }
 
-// WriteError sends an error message via SSE
-// It formats domain errors as SSE messages with error type
+// WriteError sends an error message via SSE using the named event format.
+// Emits: event: error\ndata: <json>\n\n so clients can filter by event type.
 func (s *sseStreamer) WriteError(err *domain.Error) error {
-	// Convert domain error to message
 	errorMessage := &domain.Message{
 		ID:        fmt.Sprintf("error_%d", err.Timestamp.UnixNano()),
 		Content:   err.Message,
@@ -141,7 +140,12 @@ func (s *sseStreamer) WriteError(err *domain.Error) error {
 		},
 	}
 
-	return s.WriteMessage(errorMessage)
+	jsonData, jsonErr := json.Marshal(errorMessage)
+	if jsonErr != nil {
+		return fmt.Errorf("failed to marshal error message: %w", jsonErr)
+	}
+
+	return s.SendEvent("error", string(jsonData))
 }
 
 // Flush ensures immediate delivery of buffered data

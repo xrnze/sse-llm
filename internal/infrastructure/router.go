@@ -105,6 +105,8 @@ func (r *httpRouter) handleChatRequest(w http.ResponseWriter, req *http.Request)
 
 	r.logger.Info("Chat request received")
 
+	// --- Pre-stream phase: errors returned as plain HTTP responses ---
+
 	// Parse request body
 	var requestData struct {
 		Prompt      string           `json:"prompt"`
@@ -122,7 +124,26 @@ func (r *httpRouter) handleChatRequest(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	// Create domain request
+	// Verify at least one provider is available before opening the stream
+	if providers := r.streamingService.GetAvailableProviders(req.Context()); len(providers) == 0 {
+		http.Error(w, "No providers available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Open the SSE stream — headers are committed here, no plain HTTP errors after this point
+	streamer, err := NewSSEStreamer(w, r.logger)
+	if err != nil {
+		r.logger.Error("Failed to create SSE streamer", err)
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	// Safety net: always close the streamer when the handler exits,
+	// ensuring the final SSE frame and flush happen before Go writes 0\r\n\r\n.
+	defer streamer.Close()
+
+	// --- SSE stream is now open; errors from here are sent as SSE named events ---
+
+	// Build domain request
 	streamingRequest := domain.NewStreamingRequest(requestData.Prompt).
 		WithProvider(requestData.Provider).
 		WithModel(requestData.Model).
@@ -138,50 +159,15 @@ func (r *httpRouter) handleChatRequest(w http.ResponseWriter, req *http.Request)
 
 	streamingRequest.ClientID = requestData.ClientID
 
-	// Get all connected clients to broadcast the response
-	providers := r.streamingService.GetAvailableProviders(req.Context())
-	if len(providers) == 0 {
-		http.Error(w, "No providers available", http.StatusServiceUnavailable)
-		return
+	// Stream directly to this client; blocks until LLM is done or context is cancelled.
+	if err := r.streamingService.StartStreaming(req.Context(), streamingRequest, streamer); err != nil {
+		if req.Context().Err() == context.Canceled {
+			// Expected: client navigated away or upstream timed out. Not a fault.
+			r.logger.Info("Streaming ended: context cancelled")
+		} else {
+			r.logger.Error("Streaming error", err)
+		}
 	}
-
-	// Start streaming to all connected clients
-	// Note: In a real application, you might want to stream only to the requesting client
-	go func() {
-		// We'll broadcast a system message about the new request
-		requestMsg := domain.NewMessage(
-			fmt.Sprintf("Processing request: %s", requestData.Prompt),
-			domain.MessageTypeSystem,
-		)
-
-		if err := r.streamingService.BroadcastMessage(context.Background(), requestMsg); err != nil {
-			r.logger.Error("Failed to broadcast request message", err)
-		}
-
-		// Create context that can be cancelled but doesn't timeout
-		streamCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Create a dummy streamer for the response (we'll broadcast instead)
-		dummyStreamer := &dummyStreamer{
-			streamingService: r.streamingService,
-			logger:           r.logger,
-			cancel:           cancel, // Allow streamer to cancel if no clients
-		}
-
-		// Start streaming with timeout context
-		if err := r.streamingService.StartStreaming(streamCtx, streamingRequest, dummyStreamer); err != nil {
-			r.logger.Error("Failed to start streaming", err)
-		}
-	}()
-
-	// Return success response
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":     "streaming",
-		"providers":  providers,
-		"request_id": fmt.Sprintf("req_%d", time.Now().UnixNano()),
-	})
 }
 
 func (r *httpRouter) handleWebClient(w http.ResponseWriter, req *http.Request) {
@@ -258,39 +244,3 @@ func (r *httpRouter) handleMetrics(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(metrics)
 }
-
-// dummyStreamer implements SSEStreamer for broadcasting instead of direct streaming
-type dummyStreamer struct {
-	streamingService domain.StreamingService
-	logger           domain.Logger
-	cancel           context.CancelFunc
-}
-
-func (d *dummyStreamer) WriteMessage(message *domain.Message) error {
-	// Check if there are any active clients before broadcasting
-	if d.streamingService.GetActiveClientCount() == 0 {
-		d.logger.Info("No active clients, cancelling streaming")
-		if d.cancel != nil {
-			d.cancel()
-		}
-		return nil
-	}
-
-	err := d.streamingService.BroadcastMessage(context.Background(), message)
-	return err
-}
-
-func (d *dummyStreamer) WriteError(err *domain.Error) error {
-	errorMsg := &domain.Message{
-		ID:        fmt.Sprintf("error_%d", time.Now().UnixNano()),
-		Content:   err.Message,
-		Type:      domain.MessageTypeError,
-		Timestamp: time.Now(),
-	}
-	return d.streamingService.BroadcastMessage(context.Background(), errorMsg)
-}
-
-func (d *dummyStreamer) Close() error   { return nil }
-func (d *dummyStreamer) IsClosed() bool { return false }
-func (d *dummyStreamer) SetHeaders()    {}
-func (d *dummyStreamer) Flush() error   { return nil }
