@@ -3,6 +3,8 @@ package infrastructure
 import (
 	"fmt"
 	"log"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"sse-streaming-chat/internal/domain"
@@ -58,16 +60,24 @@ func (l *simpleLogger) With(fields ...interface{}) domain.Logger {
 func (l *simpleLogger) logWithLevel(level, msg string, fields ...interface{}) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	fieldStr := l.formatFields(fields...)
-	
-	logMsg := fmt.Sprintf("[%s] %s: %s%s%s", 
-		timestamp, 
-		level, 
+
+	_, file, line, ok := runtime.Caller(2)
+	callerInfo := "unknown:0"
+	if ok {
+		callerInfo = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	}
+
+	logMsg := fmt.Sprintf("[%s] [%s] %s: %s%s%s",
+		timestamp,
+		callerInfo,
+		level,
 		l.prefix,
 		msg,
 		fieldStr,
 	)
-	
-	log.Println(logMsg)
+
+	// Writing directly rather than log.Println to avoid duplicating date/time if log flags are set
+	log.Writer().Write([]byte(logMsg + "\n"))
 }
 
 // formatFields formats key-value pairs into a readable string
@@ -75,7 +85,7 @@ func (l *simpleLogger) formatFields(fields ...interface{}) string {
 	if len(fields) == 0 {
 		return ""
 	}
-	
+
 	var result string
 	for i := 0; i < len(fields); i += 2 {
 		if i+1 < len(fields) {
@@ -85,7 +95,7 @@ func (l *simpleLogger) formatFields(fields ...interface{}) string {
 			result += fmt.Sprintf("%v=%v", fields[i], fields[i+1])
 		}
 	}
-	
+
 	if result != "" {
 		return " " + result
 	}

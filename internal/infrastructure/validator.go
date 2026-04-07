@@ -45,8 +45,8 @@ func (v *messageValidator) ValidateRequest(request *domain.StreamingRequest) err
 
 	// Validate provider if specified
 	if request.Provider != "" {
-		if request.Provider != "openai" && request.Provider != "groq" {
-			return fmt.Errorf("invalid provider: %s (must be 'openai' or 'groq')", request.Provider)
+		if request.Provider != "openai" && request.Provider != "groq" && request.Provider != "openrouter" {
+			return fmt.Errorf("invalid provider: %s (must be 'openai' or 'groq' or 'openrouter')", request.Provider)
 		}
 	}
 

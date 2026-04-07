@@ -266,19 +266,27 @@ func (s *streamingService) processStreamingResponses(
 	for {
 		select {
 		case <-ctx.Done():
-			// Context cancelled, stop streaming
+			// Context cancelled mid-stream (e.g. upstream timeout, provider drop).
+			// Send a terminal error frame using a background context so the browser
+			// receives a complete final SSE chunk before the connection closes.
 			s.logger.Info("Streaming cancelled due to context", "provider", providerName)
-			return ctx.Err()
+
+			interruptErr := domain.NewError(domain.ErrorCodeProviderUnavailable, "stream interrupted")
+			// Intentionally ignore write error here — connection may already be gone.
+			_ = streamer.WriteError(interruptErr)
+			return nil
 
 		case response, ok := <-streamChan:
 			if !ok {
-				// Channel closed, streaming complete
+				// Channel closed, streaming complete.
 				s.logger.Info("Streaming completed", "provider", providerName)
 
-				// Send completion message
 				doneMsg := domain.NewMessage("Response complete", domain.MessageTypeDone)
 				doneMsg.Provider = providerName
-				return streamer.WriteMessage(doneMsg)
+				if err := streamer.WriteMessage(doneMsg); err != nil {
+					s.logger.Error("Failed to write done message", err)
+				}
+				return nil
 			}
 
 			// Handle the response

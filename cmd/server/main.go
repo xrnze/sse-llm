@@ -133,6 +133,13 @@ func buildContainer(cfg *config.Config, logger domain.Logger) (*DependencyContai
 		logger.Info("Groq provider initialized", "model", cfg.Groq.Model)
 	}
 
+	// Initialize OpenRouter provider if configured
+	if cfg.IsOpenRouterEnabled() {
+		openRouter := p.NewOpenRouterProvider(cfg.OpenRouter, logger)
+		providers["openrouter"] = openRouter
+		logger.Info("OpenRouter provider initialized", "model", cfg.OpenRouter.Model)
+	}
+
 	// Ensure at least one provider is available
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("no LLM providers configured - please set API keys")

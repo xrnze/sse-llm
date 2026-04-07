@@ -20,7 +20,10 @@ type Config struct {
 	OpenAI OpenAIConfig `mapstructure:"openai"`
 
 	// Groq API configuration
-	Groq GroqConfig `mapstructure:"groq"`
+	Groq LLMConfig `mapstructure:"groq"`
+
+	// OpenRouter API configuration
+	OpenRouter LLMConfig `mapstructure:"openrouter"`
 
 	// Application behavior configuration
 	App AppConfig `mapstructure:"app"`
@@ -62,8 +65,8 @@ type OpenAIConfig struct {
 	Temperature float32 `mapstructure:"temperature"`
 }
 
-// GroqConfig holds Groq/X.AI API configuration
-type GroqConfig struct {
+// LLM provider config holds Groq/X.AI API configuration
+type LLMConfig struct {
 	// APIKey for authentication with X.AI (Groq)
 	APIKey string `mapstructure:"api_key"`
 
@@ -224,6 +227,11 @@ func (c *Config) IsOpenAIEnabled() bool {
 // IsGroqEnabled returns true if Groq is configured
 func (c *Config) IsGroqEnabled() bool {
 	return c.Groq.APIKey != ""
+}
+
+// IsOpenRouterEnabled returns true if OpenRouter is configured
+func (c *Config) IsOpenRouterEnabled() bool {
+	return c.OpenRouter.APIKey != ""
 }
 
 // GetAPIKeyFromEnv is a helper function to safely get API keys from environment
